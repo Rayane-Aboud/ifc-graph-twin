@@ -1,0 +1,32 @@
+# Local Neo4j for `twin ingest --execute`. Just the database — the Rust binary
+# runs on the host (`cargo run -p cli --features bolt -- ingest ... --execute`),
+# so there's nothing to rebuild here on every code change.
+#
+#   docker compose up -d        # start Neo4j
+#   docker compose down         # stop (keeps the volume)
+#   docker compose down -v      # stop and wipe the data
+#
+# Browser UI: http://localhost:7474  (login neo4j / password)
+# Bolt:       bolt://127.0.0.1:7687
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: twin-neo4j
+    ports:
+      - "7474:7474" # HTTP browser UI
+      - "7687:7687" # Bolt (the driver connects here)
+    environment:
+      # Matches the CLI defaults (--neo4j-user / --neo4j-password).
+      NEO4J_AUTH: neo4j/password
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      # `cypher-shell` ships in the image; a trivial query proves the DB is up.
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p password 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  neo4j-data:

@@ -1,0 +1,22 @@
+[package]
+name = "twin-ingest-ifc4"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Concrete IFC4 (ISO 16739) -> SemanticGraph ingestion. Emits BOT vocabulary."
+
+[dependencies]
+twin-core = { workspace = true }
+twin-vocab = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Real STEP/IFC parser. Optional so the default build (MockSource) needs no network
+# and stays green. Enable with `--features real-parser`. Pinned tight: this crate
+# is moving fast (1.x -> 4.x within weeks), so expect to bump deliberately.
+ifc-lite-core = { version = "4.1", optional = true }
+
+[features]
+default = []
+# Swap MockSource for the real ifc-lite-core-backed IfcLiteSource.
+real-parser = ["dep:ifc-lite-core"]

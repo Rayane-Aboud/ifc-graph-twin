@@ -1,0 +1,13 @@
+[package]
+name = "twin-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Thin Axum read-only query layer over a SemanticGraph."
+
+[dependencies]
+twin-core = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }

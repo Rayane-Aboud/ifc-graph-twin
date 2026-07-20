@@ -1,0 +1,26 @@
+[package]
+name = "twin-store-neo4j"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Concrete SemanticGraph -> Neo4j via idempotent, parameterized Cypher."
+
+[dependencies]
+twin-core = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Real Bolt driver. Optional so the default build generates Cypher with no
+# network dep and stays green. Enable with `--features bolt`.
+neo4rs = { workspace = true, optional = true }
+
+[features]
+default = []
+# Add the async `execute_graph` path that runs statements over a Bolt session.
+# The async fn runs on the caller's executor (the CLI's tokio runtime); neo4rs
+# pulls in its own runtime dep, so this crate needs no direct tokio.
+bolt = ["dep:neo4rs"]
+
+[dev-dependencies]
+# Only tests reference named BOT terms; the crate itself is ontology-agnostic.
+twin-vocab = { workspace = true }

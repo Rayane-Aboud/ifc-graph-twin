@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/vocab",
+    "crates/ingest-ifc4",
+    "crates/store-neo4j",
+    "crates/api",
+    "cli",
+]
+
+# Shared metadata + dependency versions live here so every crate stays in lockstep.
+# Add a new input notation  -> new `crates/ingest-*` crate.
+# Add a new graph backend    -> new `crates/store-*`  crate.
+# Add a new ontology         -> new module in `crates/vocab` (twin-vocab); core stays neutral.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rayane/ifc-graph-twin"
+
+[workspace.dependencies]
+# internal
+twin-core        = { path = "crates/core" }
+twin-vocab       = { path = "crates/vocab" }
+twin-ingest-ifc4 = { path = "crates/ingest-ifc4" }
+twin-store-neo4j = { path = "crates/store-neo4j" }
+twin-api         = { path = "crates/api" }
+
+# external
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror  = "1"
+tokio      = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+axum       = "0.8"
+clap       = { version = "4", features = ["derive"] }
+tracing    = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Async Bolt driver for Neo4j. Optional so the default build stays offline and
+# network-free (Cypher is still generated without it). Enable with `--features
+# bolt`. Pinned deliberately; bump when the driver API moves.
+neo4rs     = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
