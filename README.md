@@ -1,21 +1,20 @@
 # ifc-graph-twin
 
-A fast ingestion + query core for digital twins: parse building/city models into
-a neutral **semantic graph**, store it, and serve live queries over it. Both
-edges stream (see "Streaming seams, resident graph"); the canonical graph in the
-middle is held resident.
+ifc-graph-twin is the base layer for a digital twin, written in Rust. It reads building models (IFC4
+files), turns them into one neutral graph, stores that graph in Neo4j and answers queries about it
+through a small API.
 
-The bet: the bottleneck in digital twins isn't AI or physics — it's
-interoperability and real-time infrastructure. This project owns the
-**ingestion + storage + query** backbone so the ML/physics layers can build on top.
+I think the hard part of digital twins is often not the AI or the physics, but getting data from
+different tools into one place and querying it quickly. So this project focuses on that part: reading,
+storing and querying. Machine learning or simulation can be built on top later.
 
-## Architecture
+## How it's organised
 
-Everything flows through one neutral model in `core`. Format-specific and
-backend-specific code lives at the edges and never leaks into the middle.
+Everything goes through one neutral model in `core`. Code that is specific to a file format or to a
+database stays at the edges and never reaches the middle.
 
 ```
- input notation            neutral core                 graph backend
+ input format              neutral core                 graph backend
 ┌────────────────┐      ┌────────────────┐         ┌────────────────┐
 │ ingest-ifc4    │─────▶│  SemanticGraph │────────▶│ store-neo4j    │
 │ (ingest-*)     │      │  Term (+vocab) │         │ (store-*)      │
@@ -26,158 +25,122 @@ backend-specific code lives at the edges and never leaks into the middle.
                           └───────────┘
 ```
 
-### The scaling axes are encoded in the crate names
+The project can grow in three directions, and each one has a clear place for new code:
 
-This project is designed to grow along three independent axes. Each axis has an
-obvious, mechanical place to add code — no rewrites, no guessing:
+| Direction | Where new code goes | Examples for later |
+|---|---|---|
+| A new input format | a new `crates/ingest-*` crate | `ingest-citygml`, `ingest-ifc2x3` |
+| A new graph database | a new `crates/store-*` crate | `store-rdf`, `store-memgraph` |
+| A new ontology | a new module in `crates/vocab` (`twin-vocab`) | Brick, SAREF, QUDT |
 
-| Axis | Where new work goes | Examples to come |
-|------|---------------------|------------------|
-| **Input notation** | a new `crates/ingest-*` crate | `ingest-citygml`, `ingest-ifc2x3` |
-| **Graph backend** | a new `crates/store-*` crate | `store-rdf`, `store-memgraph` |
-| **Ontology / vocabulary** | a new module in `crates/vocab` (`twin-vocab`) | Brick, SAREF, QUDT |
+For now the input is IFC4 (the ISO 16739 standard) and the vocabulary is BOT, the Building Topology
+Ontology from the W3C Linked Building Data group. Neither is hard-coded in the core.
 
-Today's defaults are **IFC4** (input, per ISO 16739) and **BOT** (vocabulary,
-the W3C Linked Building Data group's Building Topology Ontology). Neither is
-hardcoded into the core — see below.
+### One shared vocabulary
 
-### Canonical vocabulary: keep it N×1, not N×M
-
-Notations and ontologies could in principle multiply into an N×M matrix of
-mappings (IFC→BOT, IFC→Brick, CityGML→BOT, …). We deliberately avoid that. Every
-`ingest-*` crate normalizes into **one canonical vocabulary — BOT** — so the
-graph reads the same regardless of source format. Expressing the graph in another
-ontology is then a *downstream projection* over the finished canonical graph, not
-a parallel ingest target. That keeps the work at N ingesters × 1 canonical form,
-plus M projections — additive on each axis instead of multiplicative. Those
-projections get built when a second ontology actually lands, not before.
+With several formats and several ontologies, you could end up writing a mapping for every pair (IFC to
+BOT, IFC to Brick, CityGML to BOT...). I avoided that on purpose. Every `ingest-*` crate translates into
+one shared vocabulary, BOT, so the graph looks the same whatever the source file was. If another ontology
+is needed later, it will be a translation of the finished graph, not a new input path. That way the
+amount of work grows by adding, not by multiplying.
 
 ### Why there are no traits yet
 
-We deliberately have **one** parser, **one** backend, **one** default ontology.
-By the rule of three, that's too few to justify abstract interfaces — extracting
-a `Parser`/`Store` trait now would be guessing at a shape we haven't proven.
+Right now there is one parser, one database and one ontology. That's too few to know what a good
+`Parser` or `Store` interface should look like, so I didn't write one yet. The crate boundaries play
+that role for now. When a second `ingest-*` or `store-*` crate arrives, extracting a trait from the
+existing functions will be a simple refactor, because everything already goes through `SemanticGraph`.
 
-Instead, the *crate boundaries* are the seam. When a second `ingest-*` or
-`store-*` crate arrives, pulling a trait out of the existing concrete functions
-is a mechanical refactor, because everything already passes through
-`SemanticGraph`.
+The one place where I did plan for extension is the vocabulary. Node classes and edge types are open,
+namespaced `Term`s (like `bot:Space`) instead of a fixed enum. The `Term` type lives in `core`, and the
+known constants live in a separate `twin-vocab` crate, so `core` doesn't depend on any ontology. Adding
+Brick or SAREF terms means adding a module to `twin-vocab`, without touching any other crate.
 
-The one place we **do** design for extension up front is the vocabulary: node
-classes and edge relations are open, namespaced `Term`s (CURIE-style, e.g.
-`bot:Space`), not a closed enum. The `Term` *mechanism* lives in `core`; the
-*known constants* live in a separate `twin-vocab` crate, so `core` itself stays
-free of any specific ontology. Adding Brick or SAREF terms is a new module in
-`twin-vocab` and touches no other crate. That's a data-representation choice, not
-an abstraction layer — so it doesn't violate the rule above.
+## The crates
 
-## Crates
+- **`core`** (`twin-core`): the neutral graph, with `SemanticGraph`, `Node`, `Edge`, the open `Term` type
+  and the `SourceId` / `NodeRef` identities. It knows nothing about ontologies, file formats or
+  databases. Node values are `PropertyValue`s (text, number, boolean, or a `Quantity { value, unit }`, so
+  IFC measurements keep their units). The unit is also an open `Term`, so `unit:squareMetre` works today
+  and QUDT units can come later. Grouped IFC property sets (Psets) will come later, when a real use needs
+  them.
+- **`vocab`** (`twin-vocab`): named constants for the BOT vocabulary, and later for other ontologies. It
+  only depends on `core`.
+- **`ingest-ifc4`** (`twin-ingest-ifc4`): reads IFC4 into a `SemanticGraph` using BOT. The mapping rules
+  are in `mapping.rs`, and entities come from an `EntitySource`. Real files are read with `IfcLiteSource`,
+  based on `ifc-lite-core`, behind the `real-parser` feature. Without that feature, `ingest` stops with an
+  error instead of making up data. `MockSource` is only used for tests and for `twin demo`.
+- **`store-neo4j`** (`twin-store-neo4j`): writes a `SemanticGraph` to Neo4j with parameterised Cypher
+  queries that are safe to run twice. `write_graph` sends the statements to an output without any network
+  (the default), and `execute_graph` runs the same statements in a single Bolt transaction with the `bolt`
+  feature (`neo4rs`).
+- **`api`** (`twin-api`): a small Axum server that reads a `SemanticGraph`. Its endpoints are `/health`,
+  `/stats` (counts by class and by source model), `/nodes` (filter by `class` and `model`), `/nodes/{id}`
+  and `/nodes/{id}/neighbors` (the direct neighbours of a node). It doesn't depend on any `ingest-*` crate.
+- **`cli`**: puts it all together, with `ingest <file>` and `serve`.
 
-- **`core`** (`twin-core`) — the neutral semantic graph. `SemanticGraph`, `Node`,
-  `Edge`, the open `Term` type, `SourceId`/`NodeRef` identities. Knows no
-  ontology, no notation, no backend. The load-bearing seam. Node values are
-  `PropertyValue` (text/number/bool, plus a unit-bearing `Quantity { value, unit
-  }` so IFC magnitudes don't reach the graph dimensionless); the unit is an open
-  `Term`, so `unit:squareMetre` today and QUDT later cost nothing. Grouped IFC
-  property sets (Psets) are a deliberate later step, gated on a real producer.
-- **`vocab`** (`twin-vocab`) — named constants for the canonical BOT vocabulary
-  (and future ontologies). Depends only on `core`. Kept separate so `core` is
-  genuinely ontology-free.
-- **`ingest-ifc4`** (`twin-ingest-ifc4`) — concrete IFC4 → `SemanticGraph`,
-  emitting BOT. Mapping rules live in `mapping.rs`. The entity feed is an
-  `EntitySource`. File ingestion uses the real `ifc-lite-core`-backed
-  `IfcLiteSource` under the `real-parser` feature; without it, `ingest` fails
-  loudly rather than fabricating data. `MockSource` is a pure test/demo fixture
-  (reached via `twin demo`), never wired into file parsing.
-- **`store-neo4j`** (`twin-store-neo4j`) — concrete `SemanticGraph` → Neo4j.
-  Idempotent, parameterized Cypher. Two consumers share one set of statement
-  builders: `write_graph` streams statements to a sink offline (default, no
-  network), and `execute_graph` runs the same statements in a single Bolt
-  transaction under the `bolt` feature (`neo4rs`).
-- **`api`** (`twin-api`) — thin Axum read layer over a `SemanticGraph`.
-  Endpoints: `/health`, `/stats` (counts by class and by source model),
-  `/nodes` (filterable by `class` and `model`), `/nodes/{id}`, and
-  `/nodes/{id}/neighbors` (one-hop graph traversal). Ontology-neutral: it reads
-  classes and the `model` provenance tag as plain data, with no dependency on any
-  `ingest-*` crate.
-- **`cli`** — wires it together: `ingest <file>` and `serve`.
+A note on names: the `store-*` crates are the databases the graph is written to. Where the data comes
+*from* is called an `EntitySource`, inside `ingest-*`, so the two are not confused.
 
-Note on the word "store": `store-*` crates are graph **backends** the pipeline
-writes to. The read side — where entities come *from* — is an `EntitySource`
-inside `ingest-*`, deliberately named to avoid the collision.
+### Streaming at the edges, the full graph in the middle
 
-### Streaming seams, resident graph
+Both ends of the pipeline stream. `EntitySource` gives entities one by one through iterators, so a future
+parser could read them straight from the file without keeping a big list in memory. On the other side,
+`write_graph` sends each Cypher statement to an output as soon as it's ready, so statements can be
+printed, counted or run one at a time.
 
-Both edges of the pipeline are streaming seams. `EntitySource` yields **owned
-items through iterators**, not borrowed slices, so a future lazy parser can emit
-entities straight off the byte stream with no backing collection — the mapper
-never learns whether it got a `Vec` or a live stream. On the write side,
-`write_graph` pushes each `CypherStatement` to a **sink** (`FnMut(CypherStatement)
--> Result<..>`) instead of returning a `Vec`, so statements can be printed,
-counted, or run in a Bolt transaction one at a time without buffering the batch.
+The graph in the middle, however, has to be fully in memory. In IFC, entities refer to each other by
+`GlobalId`, and a relationship can point to an entity that appears later in the file. So all the entities
+are loaded into the `SemanticGraph` first, and the relationships are linked after that.
 
-The middle stays resident, and that is fundamental, not laziness. IFC relates
-entities by `GlobalId`, and those references are forward-declarable: a
-relationship can name a node that appears later in the file. So the mapper drains
-all entities into the `SemanticGraph` first, then resolves relationships against
-it. The graph must be fully present before edges can be linked. Streaming applies
-to the *feed in* and the *emit out*; the canonical graph itself is held in memory
-by necessity.
+### Writing and reading use the same graph
 
-### Write model and read model, one build path
-
-Persisting (`ingest` → Neo4j) and querying (`serve` → HTTP) are two projections
-of the graph — a CQRS-shaped split. The trap would be to build them separately:
-persist one file, serve another, and let the two drift. We avoid that by building
-the graph through **one** path (`load_graph` in the CLI) and handing that exact
-instance to both sides. `serve --neo4j-uri` write-throughs the same in-memory
-`SemanticGraph` it is about to serve, so within a run the persisted model and the
-queried model are one object, not two builds. No read trait is introduced —
-there is still only one backing store — but the seam is honest.
+Saving the graph (`ingest` to Neo4j) and querying it (`serve` over HTTP) are two separate uses of it. The
+risk would be to build the graph twice and end up with two versions that differ. To avoid that, the graph
+is built in one place (`load_graph` in the CLI) and the same object is used for both. With
+`serve --neo4j-uri`, the graph that is saved is exactly the one being served.
 
 ## Usage
 
 ```bash
-# zero-dependency demo — the built-in sample graph, clearly labeled
+# demo with no dependencies, using the built-in sample graph
 cargo run -p cli -- demo                           # sample -> graph -> Cypher
-cargo run -p cli -- serve --addr 127.0.0.1:8080    # query API over an (empty) graph
+cargo run -p cli -- serve --addr 127.0.0.1:8080    # query API over an empty graph
 
-# real ingestion needs the parser feature; without it, `ingest` fails loudly
+# reading real files needs the parser feature; without it, `ingest` stops with an error
 cargo run -p cli --features twin-ingest-ifc4/real-parser -- ingest path/to/model.ifc
 
-# serve AND emit the same graph's Cypher in one run (write model == read model)
+# serve the graph and print its Cypher in the same run
 cargo run -p cli --features twin-ingest-ifc4/real-parser -- \
   serve --file path/to/model.ifc --neo4j-uri bolt://127.0.0.1:7687
 ```
 
-### Persisting to a live Neo4j (Docker)
+### Saving to a real Neo4j (Docker)
 
-The offline paths above only *print* Cypher. To actually write to a database,
-start the bundled Neo4j and ingest with `--execute` (feature `bolt`):
+The commands above only print the Cypher. To really write to a database, start the Neo4j container and
+run `ingest` with `--execute` (feature `bolt`):
 
 ```bash
-docker compose up -d          # Neo4j at bolt://127.0.0.1:7687, UI on :7474 (neo4j/password)
+docker compose up -d          # Neo4j at bolt://127.0.0.1:7687, web UI on :7474 (neo4j/password)
 
-# parse a file and commit it over Bolt, atomically, in one transaction
+# read a file and save it over Bolt, in one transaction
 cargo run -p cli --features full -- ingest path/to/model.ifc --execute
 
-docker compose down           # stop (add -v to wipe the data volume)
+docker compose down           # stop it (add -v to delete the data)
 ```
 
-`--features full` turns on both optional backends (`bolt` + `real-parser`); use
-`--features bolt` alone if you only need the driver. Auth defaults match the
-compose file (`neo4j` / `password`) and can be overridden with `--neo4j-user` /
-`--neo4j-password`. A `Makefile` wraps these (`make db`, `make persist FILE=...`).
-Without the `bolt` feature, `--execute` fails loudly rather than silently
-printing — the same fail-loud stance `ingest` takes without `real-parser`.
+`--features full` turns on both optional parts (`bolt` and `real-parser`). Use `--features bolt` alone if
+you only need the database driver. The login matches the compose file (`neo4j` / `password`) and can be
+changed with `--neo4j-user` / `--neo4j-password`. The `Makefile` has shortcuts (`make db`,
+`make persist FILE=...`). Without the `bolt` feature, `--execute` stops with an error instead of only
+printing.
 
-### Federated queries: merge disciplines, ask across them
+### Querying several models together
 
-A real project is not one IFC file — it's several discipline models (architecture,
-structure, HVAC, ...) of the same building. Repeat `--file` to merge them into
-**one** graph and query across the seam. Each file's nodes are tagged with a
-`model` label derived from its name, so you can ask discipline-scoped questions a
-viewer can't.
+A real project usually has several models of the same building, one per discipline (architecture,
+structure, HVAC...). You can pass `--file` several times to merge them into one graph and query across
+them. Each file's nodes get a `model` label from the file name, so you can ask questions per discipline,
+which a normal viewer can't do.
 
 ```bash
 cargo run -p cli --features twin-ingest-ifc4/real-parser -- serve \
@@ -186,28 +149,27 @@ cargo run -p cli --features twin-ingest-ifc4/real-parser -- serve \
   --file "Sample-Test-Files/IFC 4.0.2.1 (IFC 4)/PCERT-Sample-Scene/Building-Hvac.ifc"
 ```
 
-(Use the real paths, not `...` — the folder names contain spaces, so keep the
-quotes.) Then, against `http://127.0.0.1:8080`:
+Use your real paths. The folder names contain spaces, so keep the quotes. Then, on
+`http://127.0.0.1:8080`:
 
 ```bash
-# how much did each discipline contribute to the merged graph? (the federation proof)
+# how much each discipline added to the merged graph
 curl 'localhost:8080/stats'
 # -> { nodes, edges, by_class: {"bot:Space":2,...}, by_model: {"architecture":N,"structural":M,"hvac":K} }
 
-curl 'localhost:8080/nodes?class=Space'                 # all spaces, any discipline
-curl 'localhost:8080/nodes?class=Element&model=structural'  # only structural elements
-curl 'localhost:8080/nodes/{globalId}/neighbors'        # what a storey contains / a building's spaces
+curl 'localhost:8080/nodes?class=Space'                     # all spaces, from any discipline
+curl 'localhost:8080/nodes?class=Element&model=structural'  # only the structural elements
+curl 'localhost:8080/nodes/{globalId}/neighbors'            # what a storey contains, or a building's spaces
 ```
 
-The graph's payoff: "elements per discipline" and "what contains what" are one
-request each, because relationships are first-class — not something to reconstruct
-by walking an IFC file.
+This is where the graph is useful: "elements per discipline" or "what contains what" are one request
+each, because relationships are stored directly instead of being rebuilt by reading the IFC file.
 
 ## Next steps
 
-1. ~~Pin a real IFC parser and replace `MockSource`.~~ Done: `ifc-lite-core`
-   behind the `real-parser` feature (`ingest-ifc4/src/ifclite.rs`).
-2. ~~Wire a Neo4j driver in `store-neo4j`.~~ Done: `execute_graph` over `neo4rs`
-   behind the `bolt` feature, with `docker compose up` for a local instance.
-3. Run a full-hierarchy sample IFC file end to end against a local Neo4j.
-4. Benchmark parse+ingest throughput against IfcOpenShell — the credibility story.
+1. ~~Use a real IFC parser instead of `MockSource`.~~ Done: `ifc-lite-core` behind the `real-parser`
+   feature (`ingest-ifc4/src/ifclite.rs`).
+2. ~~Connect a Neo4j driver in `store-neo4j`.~~ Done: `execute_graph` with `neo4rs` behind the `bolt`
+   feature, and `docker compose up` for a local database.
+3. Run a complete sample IFC file from start to end against a local Neo4j.
+4. Compare parsing and loading speed with IfcOpenShell.
